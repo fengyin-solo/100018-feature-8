@@ -31,26 +31,30 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>{{ row.status ?? '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in availableActions(row)"
               :key="action"
               class="link"
               type="button"
+              :disabled="acting"
               @click="runAction(action, row)"
             >
               {{ action }}
             </button>
+            <span v-if="!availableActions(row).length" class="action-hint">流程已终结</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无入库管理数据，可先登记入库单</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无入库管理数据，可先登记入库单</td>
         </tr>
       </tbody>
     </table>
@@ -71,15 +75,25 @@ type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/inbound'
 const columns = ["入库单号", "供应商名称", "货物名称", "批次号", "入库数量", "到货温度", "收货人", "入库时间"]
-const actions = ["确认收货", "安排上架", "退回入库"]
-const statuses = ["待收货", "已收货", "已上架", "已退回"]
+// 与后端流转口径保持一致：只有列出的状态才放行对应动作，其余状态不给入口。
+const ACTIONS_BY_STATUS: Record<string, string[]> = {
+  待收货: ["确认收货", "退回入库"],
+  已收货: ["安排上架", "退回入库"],
+  已上架: [],
+  已退回: [],
+}
 const stats = [{"label": "今日入库单", "value": 0}, {"label": "待上架单", "value": 0}, {"label": "到货温度不达标", "value": 0}]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const acting = ref(false)
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+function availableActions(row: Row): string[] {
+  return ACTIONS_BY_STATUS[String(row.status ?? '')] ?? []
+}
 
 function resetFilters() {
   filters.value = {}
@@ -95,18 +109,37 @@ function openCreate() {
 }
 
 async function runAction(action: string, row: Row) {
+  if (acting.value) {
+    return
+  }
   errorMessage.value = ''
+  const values: Record<string, string> = { action }
+  if (action === '确认收货') {
+    const input = window.prompt(`录入入库单 ${row['入库单号'] ?? row.id} 的到货温度（℃）`)
+    if (input === null) {
+      return
+    }
+    if (!input.trim()) {
+      errorMessage.value = '确认收货前请先录入到货温度（摄氏度数值，例如 -18）'
+      return
+    }
+    values['到货温度'] = input.trim()
+  }
+  acting.value = true
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(values),
     })
-    if (!response.ok) {
-      throw new Error('入库管理动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null) as { ok?: boolean; message?: string } | null
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message || '入库管理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '入库管理操作失败'
+  } finally {
+    acting.value = false
   }
 }
 
@@ -128,3 +161,15 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.action-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.link:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+</style>

@@ -50,9 +50,13 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条入库单执行确认收货、安排上架、退回入库；不允许的动作会被拦下并说明原因。"""
+    """对单条入库单执行确认收货、安排上架、退回入库。
+
+    流转口径由服务层统一拦截：状态不允许时返回 ok=False，并在 message 里
+    说明当前状态与可选动作；确认收货需在 values 里带上「到货温度」。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
